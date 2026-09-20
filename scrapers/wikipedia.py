@@ -14,6 +14,7 @@ Output: data/processed/elections.csv
 """
 import argparse
 import csv
+import glob
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import urllib.request
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 OUT = os.path.join(ROOT, "data", "processed", "elections.csv")
+OUT_YEAR = os.path.join(ROOT, "data", "processed", "elections_{}.csv")
 RAW = os.path.join(ROOT, "data", "raw", "wiki")
 
 API = "https://tr.wikipedia.org/w/api.php"
@@ -47,7 +49,7 @@ PROVINCES = [
 
 ELECTION_NAMES = {
     2023: "2023 Türkiye cumhurbaşkanlığı ve genel seçimleri",
-    2018: "2018 Türkiye genel seçimleri",
+    2018: "2018 Türkiye cumhurbaşkanlığı ve genel seçimleri",
 }
 
 
@@ -103,9 +105,9 @@ PARTY_ABBREV = {
     "YEŞİL SOL": "dem", "YEŞİLSOL": "dem", "YSP": "dem", "HDP": "dem",
     "TİP": "tip", "TIP": "tip", "YENİDEN REFAH": "yeniden_refah",
     "MEMLEKET": "memleket", "BÜYÜK BİRLİK": "bbp", "BBP": "bbp",
-    "SAADET": "sp", "DEVA": "deva", "GELECEK": "gelecek", "DP": "dp",
+    "SAADET": "sp", "SP": "sp", "DEVA": "deva", "GELECEK": "gelecek", "DP": "dp",
     "TÜRKİYE": "turkiye_partisi", "ZAFER": "zaf", "HÜDA PAR": "hudapar",
-    "HÜDAPAR": "hudapar", "ATA": "ata", "VATAN": "other", "MİLLET": "other",
+    "HÜDAPAR": "hudapar", "ATA": "ata", "VATAN": "other", "VP": "other", "MİLLET": "other",
     "ANAP": "anap", "DSP": "dsp", "HKP": "other", "TKP": "other",
     "SOL": "other", "GENÇ": "other", "AB": "other", "MİLLİ YOL": "other",
     "GBP": "other", "AP": "other", "BĞMSZ": "other", "BAĞIMSIZ": "other",
@@ -115,69 +117,60 @@ PARTY_ABBREV = {
 def parse_party_rows(wt, year):
     """Extract {party: {votes, seats}} from the province MP results.
 
-    Two layouts:
-    A) Multi-district provinces (Ankara/İstanbul/İzmir/Bursa) have a
-       `Toplu sonuçlar` aggregate table: party rows end in
-       `| TOPLAM` + `| {{yüzde |...}}` + `| '''MV'''`.
-    B) Single-district provinces use one district-column table: rows are
-       `| [[link|ABBR]] | d1 | d2 | ... | TOPLAM` (Toplam = last numeric
-       cell). Seats come from the infobox (`sandalyeN`).
+    Every province article carries ONE aggregate table with columns
+    Çevre oyu | Gümrük oyu | İttifak oyu | Toplam | Oy oranı | MV —
+    so Toplam ALREADY includes gümrük (overseas) votes. It appears under
+    various headings (`Toplu sonuçlar` in Ankara, `Genel seçim` elsewhere);
+    we anchor on the `Çevre oyu` column marker. Party rows end in
+    `| TOPLAM` + `| {{yüzde |...}}` + `| '''MV'''`.
     """
     rows = {}
-    anchor = wt.find("== Toplu sonuçlar ==")
-    if anchor >= 0:
-        seg = wt[anchor:]
-        nxt = seg.find("\n==", 10)
-        if nxt > 0:
-            seg = seg[:nxt]
-        lines = [ln.strip() for ln in seg.split("\n")]
-        for i, ln in enumerate(lines):
-            if not ln.startswith("|") or "yüzde" not in ln:
-                continue
-            total = None
-            for j in range(i - 1, max(0, i - 4), -1):
-                v = lines[j].lstrip("|").replace(".", "").replace(",", "").strip()
-                if v.isdigit() and int(v) > 1000:
-                    total = int(v)
-                    break
-            if total is None:
-                continue
-            party = None
-            for j in range(i - 1, max(0, i - 8), -1):
-                cell = lines[j].lstrip("|").strip()
-                if (cell.startswith("[[") or "rowspan" in cell.lower()
-                        or "style=" in cell.lower() or "n/a" in cell.lower()
-                        or cell == "" or cell.isdigit()
-                        or cell.startswith("{{") or "<br" in cell.lower()):
-                    continue
-                candidate = PARTY_ABBREV.get(cell.upper())
-                if candidate:
-                    party = candidate
-                    break
-            if not party:
-                continue
-            seats = 0
-            if i + 1 < len(lines):
-                m = re.search(r"'*\s*(\d+)\s*'*", lines[i + 1])
-                if m:
-                    seats = int(m.group(1))
-            rows[party] = {"votes": total, "seats": seats}
+    anchor = wt.find("| Çevre oyu")
+    if anchor < 0:
         return rows
-
-    # Layout B: district-column table. Party rows start with `| [[link|ABBR]]`
-    # and end with the Toplam cell (last numeric cell before the next row).
-    for m in re.finditer(
-            r"\| \[\[[^\]]*\|([A-ZÇĞİÖŞÜÂ][A-ZÇĞİÖŞÜÂ \.']*?)\]\]\s*"
-            r"((?:\|[^\n]*\n?)*?)\|\s*([\d.]+)\s*\n"
-            r"(?=-bgcolor=|\|-|\|style=\"background-color:#E9E9E9|\Z)",
-            wt, re.M):
-        abbr = m.group(1).strip()
-        party = PARTY_ABBREV.get(abbr)
+    seg = wt[anchor:]
+    nxt = seg.find("\n==", 10)
+    if nxt > 0:
+        seg = seg[:nxt]
+    lines = [ln.strip() for ln in seg.split("\n")]
+    for i, ln in enumerate(lines):
+        # the % cell: `{{yüzde |...}}` template (2023) or plain `%40,4` (2018)
+        if not ln.startswith("|"):
+            continue
+        if "yüzde" not in ln and not re.search(r"\|\s*(?:align=\"(?:center|right)\"\s*)?\|\s*%\s*|^\|\s*%\s*", ln):
+            continue
+        total = None
+        for j in range(i - 1, max(0, i - 4), -1):
+            v = lines[j].lstrip("|").strip()
+            v = re.sub(r"^align=\"(?:center|right)\"\s*\|\s*", "", v)
+            v = v.replace(".", "").replace(",", "").strip()
+            if v.isdigit() and int(v) > 1000:
+                total = int(v)
+                break
+        if total is None:
+            continue
+        party = None
+        for j in range(i - 1, max(0, i - 8), -1):
+            cell = lines[j].lstrip("|").strip()
+            cell = re.sub(r"^align=\"(?:center|right)\"\s*\|\s*", "", cell)
+            if (cell.startswith("[[") or "rowspan" in cell.lower()
+                    or "style=" in cell.lower() or "n/a" in cell.lower()
+                    or cell == "" or cell.isdigit()
+                    or cell.startswith("{{") or "<br" in cell.lower()
+                    or cell.startswith("bgcolor")):
+                continue
+            candidate = PARTY_ABBREV.get(cell.upper())
+            if candidate:
+                party = candidate
+                break
         if not party:
             continue
-        total = int(m.group(3).replace(".", ""))
-        if total > 1000:
-            rows[party] = {"votes": total, "seats": 0}
+        seats = 0
+        if i + 1 < len(lines):
+            m = re.search(r"'*\s*(\d+)\s*'*", lines[i + 1])
+            if m:
+                seats = int(m.group(1))
+        rows[party] = {"votes": total, "seats": seats}
     return rows
 
 
@@ -206,12 +199,30 @@ def main():
         print(f"{prov}: {len(rows)} parties", flush=True)
     if all_rows:
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
-        with open(OUT, "w", encoding="utf8", newline="") as f:
+        with open(OUT_YEAR.format(args.year), "w", encoding="utf8", newline="") as f:
             w = csv.DictWriter(f, fieldnames=["year", "province", "party",
                                               "votes", "seats"])
             w.writeheader()
             w.writerows(all_rows)
-        print(f"wrote {OUT}: {len(all_rows)} rows", flush=True)
+        print(f"wrote {OUT_YEAR.format(args.year)}: {len(all_rows)} rows",
+              flush=True)
+        # also merge into the combined elections.csv
+        combined = {}
+        for fn in glob.glob(OUT_YEAR.format("[0-9][0-9][0-9][0-9]")):
+            if not os.path.isfile(fn):
+                continue
+            with open(fn, encoding="utf8") as f:
+                for r in csv.DictReader(f):
+                    key = (r["year"], r["province"], r["party"])
+                    combined[key] = r
+        with open(OUT, "w", encoding="utf8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["year", "province", "party",
+                                              "votes", "seats"])
+            w.writeheader()
+            w.writerows(sorted(combined.values(),
+                               key=lambda r: (r["year"], r["province"],
+                                              r["party"])))
+        print(f"merged -> {OUT}: {len(combined)} rows", flush=True)
 
 
 if __name__ == "__main__":
