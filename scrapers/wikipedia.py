@@ -48,8 +48,13 @@ PROVINCES = [
 ]
 
 ELECTION_NAMES = {
-    2023: "2023 Türkiye cumhurbaşkanlığı ve genel seçimleri",
-    2018: "2018 Türkiye cumhurbaşkanlığı ve genel seçimleri",
+    "2023": "2023 Türkiye cumhurbaşkanlığı ve genel seçimleri",
+    "2018": "2018 Türkiye cumhurbaşkanlığı ve genel seçimleri",
+    "2015": "Haziran 2015 Türkiye genel seçimleri",
+    "2015b": "Kasım 2015 Türkiye genel seçimleri",
+    "2011": "2011 Türkiye genel seçimleri",
+    "2007": "2007 Türkiye genel seçimleri",
+    "2002": "2002 Türkiye genel seçimleri",
 }
 
 
@@ -71,10 +76,13 @@ def wiki_text(title):
     fn = os.path.join(RAW, title.replace("/", "_") + ".txt")
     if os.path.isfile(fn):
         with open(fn, encoding="utf8") as f:
-            return f.read()
+            cached = f.read()
+        # a cached redirect stub is useless — refetch (redirects are followed)
+        if not cached.startswith("#YÖNLENDİRME") and "YÖNLENDİRME" not in cached[:50]:
+            return cached
     q = urllib.parse.urlencode({
         "action": "parse", "page": title, "prop": "wikitext",
-        "format": "json", "formatversion": "2"})
+        "format": "json", "formatversion": "2", "redirects": "1"})
     for attempt in range(5):
         try:
             req = urllib.request.Request(API + "?" + q, headers=UA)
@@ -91,8 +99,11 @@ def wiki_text(title):
     if "error" in data:
         return None
     wt = data["parse"]["wikitext"]
+    # cache under the resolved title if the API followed a redirect
+    res = data["parse"].get("title") or title
     os.makedirs(RAW, exist_ok=True)
-    with open(fn, "w", encoding="utf8") as f:
+    with open(os.path.join(RAW, res.replace("/", "_") + ".txt"),
+              "w", encoding="utf8") as f:
         f.write(wt)
     time.sleep(1.5)
     return wt
@@ -102,6 +113,7 @@ def wiki_text(title):
 PARTY_ABBREV = {
     "AK PARTİ": "akp", "AK PARTI": "akp", "AKP": "akp", "CHP": "chp",
     "MHP": "mhp", "İYİ PARTİ": "iyi", "İYİPARTİ": "iyi", "İYİ": "iyi",
+    "YEŞİL SOL": "dem", "YEŞİLSOL": "dem", "YSP": "dem", "HDP": "dem",
     "YEŞİL SOL": "dem", "YEŞİLSOL": "dem", "YSP": "dem", "HDP": "dem",
     "TİP": "tip", "TIP": "tip", "YENİDEN REFAH": "yeniden_refah",
     "MEMLEKET": "memleket", "BÜYÜK BİRLİK": "bbp", "BBP": "bbp",
@@ -113,17 +125,192 @@ PARTY_ABBREV = {
     "GBP": "other", "AP": "other", "BĞMSZ": "other", "BAĞIMSIZ": "other",
 }
 
+# Full party names -> key (for the 2002-2011 `||`-format tables, which use
+# only the full name without an abbreviation cell).
+FULL_NAME_MAP = {
+    "Adalet ve Kalkınma Partisi": "akp",
+    "Cumhuriyet Halk Partisi": "chp",
+    "Milliyetçi Hareket Partisi": "mhp",
+    "İYİ Parti": "iyi",
+    "Halkların Demokratik Partisi": "dem",
+    "Demokratik Halk Partisi (Türkiye)": "dem",  # HADEP/DEHAP lineage 2002
+    "Halkın Demokrasi Partisi": "dem",
+    "Emek Partisi": "dem",
+    "Saadet Partisi": "sp",
+    "Doğru Yol Partisi": "dyp",
+    "Doğru Yol Partisi (2007)": "dyp",
+    "Anavatan Partisi": "anap",
+    "Demokratik Sol Parti": "dsp",
+    "Büyük Birlik Partisi": "bbp",
+    "Demokrat Parti (2007)": "dp",
+    "Yeni Türkiye Partisi (2002)": "ytp",
+    "Türkiye Komünist Partisi (2001)": "other",
+    "Bağımsız siyasetçi": "other",
+    "Bağımsız": "other",
+    "Genç Parti": "other",
+    "Millet Partisi (1992)": "other",
+    "Liberal Demokrat Parti (Türkiye)": "other",
+    "Halkın Sesi Partisi": "other",
+    "Hak ve Eşitlik Partisi": "other",
+    "Aydınlık Türkiye Partisi": "other",
+    "Bağımsız Türkiye Partisi": "other",
+    "Halkın Yükselişi Partisi": "other",
+    "Özgürlük ve Dayanışma Partisi": "other",
+    "İşçi Partisi (Türkiye)": "other",
+    "Milliyetçi ve Muhafazakar Parti": "other",
+    "Emek Partisi": "other",
+}
+
+
+def parse_party_rows_old(wt, year):
+    """Parser for the 2002-2011 `||`-separated tables.
+
+    Row format: `| [[Full Party Name]] || çevre || gümrük || TOPLAM ||
+    % || ... || MV`. Party identified by full name only. Anchor on the
+    `!Parti` column header (heading varies: Toplam Sonuçlar / Sonuçlar).
+    Some pages use single-pipe multi-line rows instead; handled below.
+    """
+    rows = {}
+    anchor = wt.find("!Parti")
+    if anchor < 0:
+        return rows
+    seg = wt[anchor:]
+    nxt = seg.find("\n==", 10)
+    if nxt > 0:
+        seg = seg[:nxt]
+
+    # --- variant A: `||`-separated single-line rows ---
+    found = False
+    for line in seg.split("\n"):
+        if "||" not in line or "[[" not in line:
+            continue
+        found = True
+        cells = [c.strip() for c in line.split("||")]
+        m = re.match(r"\|\s*\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", cells[0].strip())
+        if not m:
+            continue
+        name = m.group(1).strip()
+        party = FULL_NAME_MAP.get(name)
+        if not party:
+            continue
+        nums = [re.sub(r"[^\d]", "", c) for c in cells[1:]]
+        nums = [int(x) for x in nums if x]
+        if len(nums) < 3:
+            continue
+        total = nums[0] if len(nums) == 3 else nums[2]
+        seats = 0
+        for c in reversed(cells[3:]):
+            if re.fullmatch(r"\d+", c.strip()):
+                seats = int(c.strip())
+                break
+        rows[party] = {"votes": total, "seats": seats}
+    if found:
+        return rows
+
+    # --- variant B: single-pipe multi-line rows (party link line then
+    # çevre / gümrük / TOPLAM / % / MV lines) ---
+    lines = [ln.strip() for ln in seg.split("\n")]
+    for i, ln in enumerate(lines):
+        m = re.match(r"\|\s*\[\[([^\]|]+)(?:\|[^\]]+)?\]\]$", ln)
+        if not m:
+            continue
+        name = m.group(1).strip()
+        party = FULL_NAME_MAP.get(name)
+        if not party:
+            continue
+        # collect the following numeric lines until the next row
+        nums = []
+        for j in range(i + 1, min(len(lines), i + 10)):
+            v = lines[j].lstrip("|").replace(".", "").strip()
+            if v.isdigit():
+                nums.append(int(v))
+            elif lines[j].startswith("|") and not lines[j].startswith("|-"):
+                pass  # % / +/- cells — skip non-numeric
+            if lines[j].startswith("|-") and nums:
+                break
+        if len(nums) >= 3:
+            total = nums[0] if len(nums) == 3 else nums[2]
+            rows[party] = {"votes": total, "seats": 0}
+    return rows
+
+
+def parse_party_rows_template(wt, year):
+    """Parser for the {{Seçim tablosu}} template format (some 2015 pages).
+
+    Row pattern: `| ABBR` / `| [[Full Name]]` then a {{Daraltılabilir
+    liste}} candidate block, then `| VOTES` / `| %` / `| MV`. Only the
+    province-wide (İl geneli) section has the candidate lists; district
+    tables are skipped.
+    """
+    anchor = wt.find("İl geneli")
+    if anchor < 0:
+        anchor = wt.find("Seçim tablosu")
+    if anchor < 0:
+        return {}
+    seg = wt[anchor:]
+    rows = {}
+    lines = [ln.strip() for ln in seg.split("\n")]
+    for i, ln in enumerate(lines):
+        # abbreviation cell: `| AK Parti` or `|bgcolor="..." | AK Parti`
+        m = re.match(r"^\|\s*(?:bgcolor=\"[^\"]*\"\s*)?\|\s*([A-ZÇĞİÖŞÜÂ][A-Za-zÇĞİÖŞÜÂçğıiöşüâ \.]*)$",
+                     ln)
+        if not m:
+            continue
+        abbr = m.group(1).strip().upper()
+        party = PARTY_ABBREV.get(abbr)
+        if not party:
+            continue
+        # only rows followed by a candidate list are province-wide
+        found_list = False
+        for j in range(i + 1, min(len(lines), i + 6)):
+            if "{{Daraltılabilir liste" in lines[j]:
+                found_list = True
+                break
+        if not found_list:
+            continue
+        votes = None
+        seats = None
+        in_list = False
+        for j in range(i + 1, min(len(lines), i + 40)):
+            cell = lines[j].lstrip("|").strip()
+            if "{{Daraltılabilir liste" in lines[j]:
+                # if the candidate list opens AND closes on this line,
+                # it's self-contained; otherwise enter skip mode
+                if "}}" not in lines[j]:
+                    in_list = True
+                continue
+            if in_list:
+                if "}}" in lines[j]:
+                    in_list = False
+                continue
+            v = cell.replace(".", "").replace(",", "").strip()
+            if v.isdigit():
+                if votes is None:
+                    votes = int(v)
+                else:
+                    seats = int(v)
+                    break
+            if lines[j].startswith("|-") and votes is not None:
+                break
+        if votes is not None:
+            rows[party] = {"votes": votes, "seats": seats or 0}
+    return rows
+
 
 def parse_party_rows(wt, year):
-    """Extract {party: {votes, seats}} from the province MP results.
+    """Extract {party: {votes, seats}} from a province's MP results.
 
-    Every province article carries ONE aggregate table with columns
-    Çevre oyu | Gümrük oyu | İttifak oyu | Toplam | Oy oranı | MV —
-    so Toplam ALREADY includes gümrük (overseas) votes. It appears under
-    various headings (`Toplu sonuçlar` in Ankara, `Genel seçim` elsewhere);
-    we anchor on the `Çevre oyu` column marker. Party rows end in
-    `| TOPLAM` + `| {{yüzde |...}}` + `| '''MV'''`.
+    Modern format (2015-2023): abbreviation line + `| [[link]]` + votes,
+    anchored on the `| Çevre oyu` column marker.
+    Template format (some 2015 pages): `{{Seçim tablosu}}` with
+    `| ABBR | [[link]] | (candidate list) | votes | % | MV`.
+    Legacy format (2002-2011): `| [[Full Name]] || v || v || TOPLAM || % ||
+    MV` under `==Toplam Sonuçlar==`.
     """
+    if "| Çevre oyu" not in wt:
+        if "Seçim tablosu" in wt and "{{Daraltılabilir liste" in wt:
+            return parse_party_rows_template(wt, year)
+        return parse_party_rows_old(wt, year)
     rows = {}
     anchor = wt.find("| Çevre oyu")
     if anchor < 0:
@@ -176,7 +363,7 @@ def parse_party_rows(wt, year):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--year", type=int, default=2023)
+    ap.add_argument("--year", type=str, default="2023")
     ap.add_argument("--provinces", nargs="*", default=None)
     args = ap.parse_args()
     name = ELECTION_NAMES[args.year]
@@ -208,7 +395,7 @@ def main():
               flush=True)
         # also merge into the combined elections.csv
         combined = {}
-        for fn in glob.glob(OUT_YEAR.format("[0-9][0-9][0-9][0-9]")):
+        for fn in glob.glob(OUT_YEAR.format("[0-9][0-9][0-9][0-9]*")):
             if not os.path.isfile(fn):
                 continue
             with open(fn, encoding="utf8") as f:
