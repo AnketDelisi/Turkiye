@@ -38,7 +38,7 @@ PROVINCES = [
     "Denizli", "Diyarbakır", "Düzce", "Edirne", "Elazığ", "Erzincan",
     "Erzurum", "Eskişehir", "Gaziantep", "Giresun", "Gümüşhane",
     "Hakkâri", "Hatay", "Iğdır", "Isparta", "İstanbul", "İzmir",
-    "Kahramanmaraş", "Kars", "Kastamonu", "Kayseri", "Kırıkkale",
+    "Kahramanmaraş", "Karabük", "Karaman", "Kars", "Kastamonu", "Kayseri", "Kırıkkale",
     "Kırklareli", "Kırşehir", "Kilis", "Kocaeli", "Konya", "Kütahya",
     "Malatya", "Manisa", "Mardin", "Mersin", "Muğla", "Muş",
     "Nevşehir", "Niğde", "Ordu", "Osmaniye", "Rize", "Sakarya",
