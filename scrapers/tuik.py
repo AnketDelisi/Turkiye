@@ -52,7 +52,20 @@ STATS = {
     "density": "NufusYogunlugu",
     "median_age": "OrtancaYas",
     "marital": "MedeniDurum",
+    "education": "EgitimDurumu",
 }
+
+EDU_LEVELS = [
+    "Okuma Yazma Bilmeyen",
+    "Okuma Yazma Bilen Fakat Bir Okul Bitirmeyen",
+    "İlkokul",
+    "Ortaokul veya Dengi Meslek Okulu",
+    "İlköğretim",
+    "Lise veya Dengi Meslek Okulu",
+    "Yüksekokul veya Fakülte",
+    "Yüksek Lisans ve Üzeri",
+    "Bilinmeyen",
+]
 
 
 def fetch_table(name, value):
@@ -75,6 +88,31 @@ def fetch_table(name, value):
         if cells and any(cells):
             rows.append(cells)
     return rows
+
+
+def fetch_education(province, year, sex="0"):
+    """Education counts via the chart flow (status=0): [province, sex, year].
+    sex=0 returns counts per level; 1/2 return percentages."""
+    body = (urllib.parse.urlencode({"status": "0", "name": "EgitimDurumu"})
+            + "&value[]=" + urllib.parse.quote(province)
+            + "&value[]=" + sex + "&value[]=" + str(year))
+    req = urllib.request.Request(API, data=body.encode(), headers={
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://nip.tuik.gov.tr/Home/EgitimDurumu",
+    })
+    with urllib.request.urlopen(req, timeout=30) as r:
+        b = r.read().decode("utf8", "replace")
+    # explanation cards: YEAR / label / value (counts when sex=0)
+    out = {}
+    for m in re.finditer(
+            r'explanation-cards-headline">\s*<span[^>]*>(\d{4})</span><br\s*/?>'
+            r'\s*([^<]+?)\s*</div>\s*<div[^>]*>\s*<span[^>]*>([\d.,]+)</span>',
+            b, re.S):
+        year_s, label, val = m.groups()
+        out[html.unescape(label.strip())] = val.strip()
+    return out
 
 
 def scrape(stat_key, provinces, sleep=0.4):
@@ -104,15 +142,49 @@ def scrape(stat_key, provinces, sleep=0.4):
     print(f"wrote {fn}: {len(out)} rows", flush=True)
 
 
+def scrape_education(provinces, years, sleep=0.4):
+    """Province x year education-level counts (sex=0, all)."""
+    out = []
+    for prov in provinces:
+        for year in years:
+            try:
+                d = fetch_education(prov, year)
+            except Exception as e:
+                print(f"{prov}/{year}: ERR {e}", flush=True)
+                continue
+            if not d:
+                print(f"{prov}/{year}: no data", flush=True)
+                continue
+            row = {"province": prov, "year": year}
+            row.update({label: d.get(label, "") for label in EDU_LEVELS})
+            row["Toplam"] = d.get("Toplam", "")
+            out.append(row)
+            time.sleep(sleep)
+        print(f"{prov}: done", flush=True)
+    fn = os.path.join(OUT_DIR, "demographics_education.csv")
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(fn, "w", encoding="utf8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["province", "year"] + EDU_LEVELS
+                           + ["Toplam"])
+        w.writeheader()
+        w.writerows(out)
+    print(f"wrote {fn}: {len(out)} rows", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stat", choices=list(STATS) + ["all"], default="all")
     ap.add_argument("--provinces", nargs="*", default=None)
+    ap.add_argument("--years", nargs="*", default=None)
     args = ap.parse_args()
     provs = args.provinces or PROVINCES
     keys = list(STATS) if args.stat == "all" else [args.stat]
     for k in keys:
-        scrape(k, provs)
+        if k == "education":
+            years = args.years or ["2008", "2013", "2018", "2023"]
+            scrape_education(provs, years)
+        else:
+            scrape(k, provs)
 
 
 if __name__ == "__main__":
