@@ -1,0 +1,19 @@
+party,x,y,source
+akp,0.55,0.60,MARPOR rile 2018 5.7; CHES 2019 galtan 1.9
+chp,-0.30,-0.25,MARPOR rile 2018 -2.4; CHES 2019 galtan -0.9
+mhp,0.80,0.75,MARPOR rile 2018 7.8; CHES 2019 galtan 2.1
+iyi,0.55,0.10,secular right-nationalist; CHES-adjacent
+dem,-0.70,-0.65,economic left; GAL; ethnic axis separate
+tip,-0.90,-0.50,far-left; GAL
+deva,0.30,-0.20,centre-right liberal
+gelecek,0.40,0.10,centre-right anti-elite
+sp,0.35,0.85,religious conservative
+yeniden_refah,0.45,0.90,religious conservative economic populist
+memleket,-0.20,0.20,centre-left nationalist
+ata,0.60,0.45,nationalist secular
+bbp,0.75,0.85,religious nationalist
+dp,0.50,-0.05,centre-right
+turkiye_partisi,0.35,-0.10,centre-right
+zaf,0.70,0.50,nationalist anti-immigration
+hudapar,0.40,0.95,religious conservative Kurdish
+other,0.00,0.00,centre fallback
