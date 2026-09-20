@@ -61,8 +61,30 @@ def distance_matrix(voters, pos):
     return parties, D
 
 
-def simulate_from(D, parties, voters, params, incumbent, rng, n_runs=20):
-    """Vectorized simulation from a precomputed distance matrix."""
+def econ_incumbency(econ, year, w_growth, w_inflation):
+    """Economic swing for the incumbent in a given year.
+
+    Hummel-Rothschild: growth helps the incumbent, inflation hurts.
+    Returns a utility shift applied to the incumbent party's utility
+    (or None when no economic data for that year -> 0).
+    """
+    if econ is None:
+        return 0.0
+    e = econ.get(str(year)[:4])
+    if not e:
+        return 0.0
+    # growth in pp helps; inflation (log scale, 5% baseline) hurts
+    return (w_growth * e["gdp_growth"]
+            - w_inflation * max(0.0, e["inflation"] - 5.0))
+
+
+def simulate_from(D, parties, voters, params, incumbent, rng, n_runs=20,
+                  incumbency_shift=0.0):
+    """Vectorized simulation from a precomputed distance matrix.
+
+    incumbency_shift: per-election economic swing added to the incumbent's
+    utility (from econ_incumbency).
+    """
     xs = np.array([v["x"] for v in voters])
     weights = np.array([v["weight"] for v in voters])
     kurd = np.array([1.0 if v["kurdis"] else 0.0 for v in voters])
@@ -71,7 +93,7 @@ def simulate_from(D, parties, voters, params, incumbent, rng, n_runs=20):
     for j, p in enumerate(parties):
         U[:, j] = -params["w_ideo"] * D[:, j]
         if p == incumbent:
-            U[:, j] += params["incumbency_bonus"]
+            U[:, j] += params["incumbency_bonus"] + incumbency_shift
         if p == "dem":
             U[:, j] += params["kurd_bonus"] * kurd
         U[:, j] += params.get("base_" + p, 0.0)

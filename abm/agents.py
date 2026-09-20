@@ -74,7 +74,15 @@ def _num(v):
 
 
 def load_education(year):
-    """province -> {level: share} for a target year."""
+    """province -> {level: share} for a target year.
+
+    Education data exists only for 2008/2013/2018/2023; fall back to the
+    nearest available year for older elections (2002/2007 -> 2008).
+    Handles '2015b' (November 2015) -> 2015.
+    """
+    year_num = int(str(year)[:4])
+    available = [2008, 2013, 2018, 2023]
+    year = min(available, key=lambda y: abs(y - year_num))
     out = {}
     with open(os.path.join(DATA, "demographics_education.csv"),
               encoding="utf8") as f:
@@ -92,10 +100,11 @@ def load_education(year):
 
 def load_sex(year):
     """province -> (male_share, female_share, population)."""
+    year_num = str(year)[:4]
     out = {}
     with open(os.path.join(DATA, "demographics_sex.csv"), encoding="utf8") as f:
         for r in csv.DictReader(f):
-            if r["c0"] != str(year):
+            if r["c0"][:4] != year_num:
                 continue
             pop = _num(r["c2"])
             male = _num(r["c3"])
